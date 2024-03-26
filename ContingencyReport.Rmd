@@ -1,0 +1,311 @@
+---
+title:
+output: 
+  html_document:
+    theme: sandstone
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+<style type="text/css">
+.main-container {
+  max-width: 1800px;
+  margin-left: 0px;
+  margin-right: 0px
+}
+</style>
+
+<h1><center>Contingency Report</h1>
+<br>
+<h4><center>`r format(Sys.time(), '%B %d, %Y')`</h4>
+<br>
+<h4><center>This report calculates contingency based on actual doses spilled in PRISM. It does not calculate theoretical contingency based on inventories and boar usage.</h4>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(writexl)
+library(here)
+library(kableExtra)
+
+source('C:/Users/vance/Documents/myR/functions/getSQL.r')
+
+pigraw<-read_csv("C:/Users/vance/Documents/projects/Working Project Directory/data/data-SQL-BS-Data-Pull/pig.csv", 
+                 col_types = cols(Index = col_number()))
+collraw<-read_csv("C:/Users/vance/Documents/projects/Working Project Directory/data/data-SQL-BS-Data-Pull/coll.csv")
+distraw<-read_csv("C:/Users/vance/Documents/projects/Working Project Directory/data/data-SQL-BS-Data-Pull/dist.csv")
+splitraw<-read_csv("C:/Users/vance/Documents/projects/Working Project Directory/data/data-SQL-BS-Data-Pull/split.csv")
+
+cont1<-pigraw %>% 
+  group_by(`Boar Stud`,Breed) %>% 
+  filter(`Boar Status`%in%c('WORKING','NONWORKING')) %>% 
+  summarise('Inventory'=n_distinct(BoarID))
+
+cont2<-distraw %>% 
+  group_by(`Boar Stud`,Breed) %>% 
+  filter(Dest!='* TRASH *',
+         Date_Shipped>=floor_date(x = today(),unit = "week", week_start = 1)-28,
+         Date_Shipped<floor_date(x = today(),unit = "week", week_start = 1)) %>% 
+  summarise('Doses Distributed'=round(sum(Doses)/4, digits = 0))
+
+cont3<-read_csv(file = here::here("inputs","targets.csv"))
+
+cont4<-left_join(x = cont3,y = cont1,by=c("Boar Stud"="Boar Stud","Breed"="Breed"))
+cont5<-left_join(x = cont4,y = cont2,by=c("Boar Stud"="Boar Stud","Breed"="Breed"))
+
+cont6<-distraw %>% 
+  group_by(`Boar Stud`,Breed) %>% 
+  filter(Dest=='* TRASH *',
+         Date_Shipped>=floor_date(x = today(),unit = "week", week_start = 1)-28,
+         Date_Shipped<floor_date(x = today(),unit = "week", week_start = 1)) %>% 
+  summarise('Contingency Doses'=round(sum(Doses)/4, digits = 0))
+
+cont7<-left_join(x = cont5,y = cont6, by=c("Boar Stud"="Boar Stud","Breed"="Breed"))
+
+cont7[is.na(cont7)]<-0
+
+cont8<-cont7 %>% 
+  group_by(`Boar Stud`) %>% 
+  mutate('Total Target'=sum(Target),
+         'Total Inventory'=sum(Inventory),
+         '% of Capacity'=round((`Total Inventory`/Spaces)*100,digits = 1),
+         '% of Target'=round((`Total Inventory`/`Total Target`)*100, digits = 1))
+
+cont9<-read_csv(file = here::here("inputs","dosesperboar.csv"))
+
+cont10<-left_join(x = cont8,y = cont9, by=c("Breed"="Breed"))
+
+cont11xx<-cont10 %>% 
+  group_by(`Boar Stud`,Breed) %>% 
+  mutate('Line % of Target'=round((Inventory/Target )*100,digits = 1),
+         'Contingency Boars'=round(`Contingency Doses`/`Doses/Boar`, digits = 0),
+         'Breeds'=round(`Doses Distributed`/2.1,digits = 0),
+         'Sows Supported'=`Breeds`*20)
+
+iso <- "SELECT a.SPGid
+      ,a.DV_IDX
+         ,c.destination
+         ,c.shipfromdate
+      ,c.shipdate
+      ,b.Breed
+         ,c.dtstamp
+  FROM Intranet.dbo.ProductIdx a
+  inner join BlupDB.final.pedigree b on a.SPGid= b.SPGid
+  inner join Intranet.dbo.Sow_ShippingList c on a.SPGid=c.tattoo
+  where c.shipfromdate>'2020-01-01'
+  and shipfromdate=shipdate and finaldestination is null 
+  and destination in ('MB 7081',
+         'MB 7082',
+         'MB 7092',
+         'MB 7093',
+         'MB 7094',
+         'MBW Cimarron',
+         'MBW Cyclone',
+         'MBW Yuma',
+         'SPG9644',
+         'Skyline Boar Stud',
+         'SPGNC',
+         'SPGVA')
+  and dtstamp is null"
+isoraw <- getSQL('Intranet',query=iso)
+
+iso1<-isoraw[!duplicated(isoraw$SPGid),]
+
+iso2<-read_csv(here::here("inputs","codes.csv"))
+
+iso3<-left_join(x = iso1, y = iso2, by=c("Breed"="code"))
+
+iso4<-iso3 %>% 
+  group_by(destination, breed) %>% 
+  summarise('Isolation Inventory'=n_distinct(SPGid))
+
+cont11aa<-pigraw %>% 
+  group_by(`Boar Stud`,Breed) %>% 
+  filter(`Boar Status`%in%c('WORKING','NONWORKING')) %>% 
+  summarise('Last Entry Date'=max(Date_Arrival))
+
+cont11bb<-left_join(x = cont11xx, y = cont11aa, by=c("Boar Stud"="Boar Stud","Breed"="Breed"))
+cont11cc<-left_join(x = cont11bb,y = iso4, by=c("Boar Stud"="destination","Breed"="breed"))
+cont11<-cont11cc %>% 
+  filter(`Boar Stud`!='SPG9644')
+  
+
+
+```
+<br>
+<br>
+<br>
+<h1><center>Target Inventory</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont11a<-cont11 %>% 
+  filter(Breed=='SPG240') %>% 
+  select(c(1,4,8,9,10,11))
+
+cont11b<-cont11a[c(-1)]
+
+cont11c<-cont11b %>% 
+  bind_rows(.,(cont11a %>% ungroup %>% summarise(Spaces=sum(Spaces),`Total Target`=sum(`Total Target`),`Total Inventory`=sum(`Total Inventory`, na.rm = TRUE ),`% of Capacity`=round((`Total Inventory`/`Spaces`)*100, digits = 1),`% of Target`=round((`Total Inventory`/`Total Target`)*100,digits = 1)))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont11c,align = 'c') %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>DNA200</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont12<-cont11 %>% 
+  filter(Breed=='DNA200') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont13<-cont12 %>% 
+  bind_rows(.,(cont12 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont13,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>DNA400</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont14<-cont11 %>% 
+  filter(Breed=='DNA400') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont15<-cont14 %>% 
+  bind_rows(.,(cont14 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont15,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>TNLR</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont16<-cont11 %>% 
+  filter(Breed=='TNLR') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont17<-cont16 %>% 
+  bind_rows(.,(cont16 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont17,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>PICL03</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont18<-cont11 %>% 
+  filter(Breed=='PICL03') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont19<-cont18 %>% 
+  bind_rows(.,(cont18 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont19,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>PICL02</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont20<-cont11 %>% 
+  filter(Breed=='PICL02') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont21<-cont20 %>% 
+  bind_rows(.,(cont20 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont21,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>SPG110</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont22<-cont11 %>% 
+  filter(Breed=='SPG110') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont23<-cont22 %>% 
+  bind_rows(.,(cont22 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont23,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>SPG120</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont24<-cont11 %>% 
+  filter(Breed=='SPG120') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont25<-cont24 %>% 
+  bind_rows(.,(cont24 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont25,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+<br>
+<br>
+<br>
+<h1><center>SPG240</h1>
+<br>
+```{r echo=FALSE, message=FALSE, warning=FALSE, paged.print=FALSE}
+cont26<-cont11 %>% 
+  filter(Breed=='SPG240') %>% 
+  select(c(1,2,3,5,13,6,15,16,7,14,17,18))
+
+cont27<-cont26 %>% 
+  bind_rows(.,(cont26 %>% ungroup %>% summarise(`Target`=sum(`Target`),Inventory=sum(Inventory, na.rm = TRUE ),`Doses Distributed`=sum(`Doses Distributed`, na.rm = TRUE ),Breeds=sum(Breeds, na.rm = TRUE ),`Sows Supported`=sum(`Sows Supported`, na.rm = TRUE ),`Contingency Doses`=sum(`Contingency Doses`, na.rm = TRUE ),`Contingency Boars`=sum(`Contingency Boars`, na.rm = TRUE )))) %>% 
+  mutate(across(everything(),as.character)) %>% 
+  replace(is.na(.),"") %>% 
+  mutate(`Boar Stud`= ifelse(`Boar Stud`=="","Total",`Boar Stud`))
+
+kbl(x = cont27,align = 'c', digits = 2) %>% 
+  kable_styling()
+```
+
